@@ -1,0 +1,375 @@
+---
+title: "Grocery - Market Basket Analysis"
+author: "Artur Skowroński"
+date: "21 12 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Association rules are classified as unsupervised learning methods, where we are trying to find relations or patterns among large sets of data items. One of such a method is called "Market Basket Analysis" (MBA) which is based on the rule so called "if-then". In other words, this method might be helpful to estimate the behaviour of a client who does the shopping, by estimating, which other products the customer is going to select, basing on his current products in basket. For example, we might be interested in calculating, what is the chance that client who already took a butter into his basket, will also take a bread.
+
+In order to reach the best possible result, several metrics have been highlighted that appear to be important. These are:
+
+- support - number of how often a specific set of products appears in all the orders;
+- confidence - indicates the strength of the rule, how much two sides of the rule are linked;
+- expected confidence - confidence divided by number of transactions;
+- lift- confidence divided by expected confidence, it is the indicator of how strong the items are linked.
+
+By and large, in order to achieve the best possible, maximisation of the above statistics is required.
+
+## Libraries and dataset
+
+```{r libraries, message=FALSE, warning=FALSE}
+# Data handling
+library(tidyverse)
+library(kableExtra)
+#library(plyr) - dply() function for making a baskets and mapvalues() function for recoding the data
+
+# Assosciation rules
+library(arules)
+library(arulesViz)
+
+```
+
+```{r dataset}
+
+grocery_org <- read.csv('Groceries_dataset.csv', sep = ",")
+dim(grocery_org)
+
+```
+The dataset for this project comes from https://www.kaggle.com/heeraldedhia/groceries-dataset. It's dimension is equal to 38765 x 3. The 
+variables are as follows:
+
+- Member_number - basically it is ID of each customer who has/bought a product
+- Date - date of buying each product
+- itemDescription - the description of each product
+
+```{r dataset_head}
+
+kable(head(grocery_org)) %>% 
+    kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+## Exploratory Data Analysis
+
+Despite having a small amount of variables, it is definitely worth delve into the dataset to find maybe some interesting dependecies.
+
+```{r summary}
+
+summary(grocery_org)
+
+```
+We see that summarising the data, at the first glance hasn't give me valuable information. Nevertheless, it is worth to higlight that variable "Date" is saved as as character variable. It might be advisable to change it.
+
+```{r changing_of_date}
+
+# I don't want to affect my original data, so just in case I will make a copy 
+grocery <- as.data.frame(grocery_org)
+grocery$Date <- as.Date(grocery$Date, "%d-%m-%y")
+class(grocery$Date) # Check
+
+```
+Now, in order to better understand the data, I will separate variable Date into new ones: Year, Month, Day.
+
+```{r split_date, results = 'hide'}
+
+grocery_final <- separate(grocery, "Date", c("Year", "Month", "Day"), sep = "-")
+grocery_final$Date <- grocery$Date
+
+```
+```{r}
+kable(head(grocery_final)) %>% 
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# By the way, let's see how many different dates I have in my analysis
+print(paste("The number of unique years is equal to:", length(unique(grocery_final$Year))))
+print(paste("The number of unique months is equal to:", length(unique(grocery_final$Month))))
+print(paste("The number of unique days is equal to:", length(unique(grocery_final$Day))))
+```
+Let's look for NA values and for potential duplicates. But, be careful because it may occur that one client the same day has bought two and more pieces of some product.
+
+```{r na_values}
+# Look for NaN's
+colSums(is.na(grocery_final))
+
+```
+
+```{r duplicated_values}
+sum(duplicated(grocery_final))
+kable(head(grocery_final[duplicated(grocery_final), ])) %>% 
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+# The data may have potential duplicates. In this let's check one client
+kable(grocery_final[grocery_final$Member_number == 2051 & grocery_final$itemDescription == "other vegetables", ]) %>% 
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+As we see, there are some duplicates. However we shouldn't be worried, because I don't know what exact vegetables these clients have bought.
+That's why I decided to not removing any record (the MBA algorithm later will remove the duplicates on its own).
+Having in mind, that there are no missing values, let's check, which customer has bought the most products.
+
+```{r customer_uniqness}
+
+# Checking the uniqueness of customers (one customer is like a one basket)
+length(unique(grocery_final$Member_number))
+
+# Because I have quite a lot of shopping carts, the optimal solution will be to limit the number of customer = 6
+head(sort(table(grocery_final$Member_number), decreasing = TRUE))
+
+```
+We can see that the record holders bought more than 30 products during the year.
+For these 6 customers, I decided to check, how their purchases decomposed over time (in months). This will help me in assesing, whether they were regular customers or one-offs.
+
+#### Visualisations
+
+```{r plot_6_best_customers, out.width = "200%", out.height = "200%"}
+
+par(mfrow = c(2,3))
+
+  grocery_final%>%
+  filter(Member_number %in% c(3180, 2051, 3050, 3737, 2271, 2433)) %>% 
+  group_by(Member_number, Month) %>% 
+  mutate(Occurencies_per_month = (count = n())) %>% 
+  select(Member_number, Month, Occurencies_per_month) %>% 
+  ggplot(mapping = aes(x = Month, 
+                       y = Occurencies_per_month, 
+                       group = Member_number, 
+                       colour = factor(Member_number))) +
+    geom_line(show.legend = FALSE) +
+    ggtitle("Monthly distribution of the products bought") +
+    xlab("Months") +
+    ylab("Amount of bought products") +
+    theme_bw() +
+    facet_wrap(~Member_number, scales = "free", 
+               labeller = as_labeller(c("2051" = "Customer ID: 2051",
+                                        "2271" = "Customer ID: 2271",
+                                        "2433" = "Customer ID: 2433",
+                                        "3050" = "Customer ID: 3050",
+                                        "3180" = "Customer ID: 3180",
+                                        "3737" = "Customer ID: 3737")))
+
+```
+
+
+As we see on above charts, all the top clients are definitely not one-time customers and their transactions are distributed unevenly throughout the year. It might also be tempted to conclude that the customers purchasing decisions were independent of each other. What's more, we cannot distinguish any pattern that all customers e.g. make more purchases during the Christmas (December).
+
+
+**NOTE**
+
+I am aware that my data is not included in a single point in time. However, for the purpose of practicing the algorithm, I will assume that all purchases were made at the same time. So now, for each customer, I will calculate the total amount of purchased products.
+
+```{r grocery_final_one_date}
+
+grocery_final <- 
+  grocery_final%>%
+  group_by(Member_number) %>% 
+  mutate(Occurencies = (count = n()))
+
+```
+```{r geom_violin_basket_size, message = FALSE, warning = FALSE, cache= FALSE}
+
+basket_size_plot <- ggplot(data = grocery_final, mapping = aes(x = Occurencies, y = 1)) +
+                      geom_violin(fill='#A4A4A4') +
+                      ggtitle("Violin plot for the customers baskets") +
+                      xlab("The size of the basket") +
+                      ylab("")
+
+basket_size_plot + geom_boxplot(width=0.1)
+```
+
+Now, let me check some dependecies of a basket size and assess which product was bought the most times.
+
+```{r occurences_of_each_product, warning = FALSE, message = FALSE}
+
+products_countplot <- grocery_final %>%
+                        group_by(itemDescription) %>%
+                        summarise(counts = n()) %>%
+                        top_n(10) %>% 
+                        ggplot(aes(x = reorder(itemDescription, -counts), y = counts)) +
+                          geom_bar(fill = "mediumpurple3", stat = "identity") +
+                          ggtitle("Countplot of ten the most popular products") +
+                          xlab("Products") +
+                          ylab("") +
+                          theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+products_countplot
+
+```
+
+Whole milk is the most selected product. From the above graph, it can also be inferred that the product group for vegetables is somehow splitted, which can significantly vary future results.
+
+**Interesting fact**
+
+An auxiliary graphical function (ggpubr::itemFrequencyPlot()) has also been created for the MBA algorithm, which shows the most frequently purchased/selected items from the shopping cart. The resulting barplot/countplot should be equivalent to what Ihave presented above.
+
+---
+
+## Assocation rules
+
+#### Preparation
+
+After analysing the data, let's transform it to the form which will enable me to implement the Assocation rules algorithm.
+
+Now, I will convert the ID (Member_number variable) of each customerthe categorical format. 
+
+```{r conversion}
+
+converted_grocery <- grocery_final[order(grocery_final$Member_number),]
+converted_grocery$Member_number <- as.numeric(converted_grocery$Member_number)
+glimpse(converted_grocery)
+
+```
+After that, I will group all the items that were bought by each customer on the same date, in order to make some baskets.
+
+```{r create_baskets}
+
+items <- plyr::ddply(converted_grocery, c("Member_number","Date"), function(temp_df)paste(temp_df$itemDescription,collapse = ","))
+items <- subset(items, select = V1)
+head(items)
+
+```
+Finally, I am saving the new data and then, opening it with an appriopriate function.
+
+```{r saving_opening}
+
+write.csv(items, file = "transactions.csv", quote = FALSE,  row.names = T)
+basket_df <- arules::read.transactions("transactions.csv", format = "basket", sep = ",", cols = 1)
+print(basket_df)
+
+```
+At this point, deliberately I did not turn off warning messages, because when we create baskets, we get an important message telling us that the function will remove the duplicates on its own. This is consistent with what I mentioned earlier during the exploratory part.
+
+#### Apriori algorithm
+
+With the data already prepared and cleaned, I will now proceed to implement the MBA method. I will first implement the apriori() algorithm, which seems to be the most helpful. In general, we are interested in transformations of X into Y, which allows us to calculate the 3 measures, which I mentioned earlier: support, confidence and lift.
+
+```{r apriori, message=FALSE}
+
+basket_apriori <- apriori(basket_df, parameter = list(sup = 0.001, conf = 0.05, minlen = 2))
+summary(basket_apriori)
+inspect(basket_apriori[1:5])
+
+```
+
+```{r sort_confidence}
+inspect(head(sort(basket_apriori, by = "confidence", decreasing = TRUE)))
+```
+Based on the above table (confidence variable), we see that one in four people who bought sausage and yogurt has also bought whole milk. What's more, it occured that whole milk, actually is the most desirable product for the first five baskets.
+
+I will now present the obtained results graphically in different views. Despite the various methods, the information contained in the graphs should present the same outcome.
+
+```{r matrix_analysis, message = FALSE}
+
+plot(basket_apriori[1:20], method="matrix", measure="lift")
+
+```
+
+```{r group_graph}
+
+plot(basket_apriori[1:20], method="grouped")
+plot(basket_apriori[1:20], method="graph")
+
+```
+
+```{r paracoord}
+
+plot(basket_apriori[1:20], method="paracoord", control=list(reorder=TRUE))
+
+```
+
+#### Jaccard index
+
+Despite basic measures such as support, confidence, and lift, which are recognized as symbols of Assosiation Rules, many more can be included in our analysis. One of them is certainly the Jaccard index.
+
+Without going into a mathematical formula, this measure calculates the probability that two items (in my case products) will be bought together. The result we obtain is a probability matrix between the products. The closer the value is to 1, the lower the probability that the products will appear in the same basket.
+
+```{r Jaccard}
+
+basket_index <-basket_df[, itemFrequency(basket_df)>0.05] 
+jac_index<-dissimilarity(basket_index, which="items", method = "jaccard") 
+round(jac_index, 2)
+
+```
+As we can see, the distribution of this matrix oscillates above a probability of 95%. In that case, we can conclude that there is a small chance of observing the above products in the same basket.
+
+Because of the fact that my data is dissimilar I will plot also the dendogram.
+
+```{r hierarchical}
+plot(hclust(jac_index, method="ward.D2"), main="Dendrogram for trans")
+```
+
+### Diary products
+
+#### Whole milk
+
+From the above analysis, I know that milk turned out to be the most frequently selected product. Now, I'll check what exactly were people buying, before selecting whole milk next.
+
+```{r whole_milk_analysis}
+
+whole_milk_apriori <- apriori(basket_df, parameter = list(supp=0.001, conf=0.15),appearance = list(default="lhs",rhs="whole milk"))
+inspect(whole_milk_apriori, linebreak = FALSE)
+
+```
+Deliberately, I increased the confidence level in order to focus only on those products which might be crucial to the analysis. To be honest, it is a bit strange that, with an empty shopping basket, milk was initially selected as the first product
+Nevertheless, I think that the whole milk was chosen very randomly and not e.g. as part of a given recipe for some cake.
+So I will check how the situation looks like for another type of diary product which is yogurt. If the results turn out to be similar, I may have a suspicion that the customers of my "store" were very diversified.
+
+#### Yogurt
+
+```{r yoghurt}
+
+yogurt_apriori <- apriori(basket_df, parameter = list(supp=0.001, conf=0.10), appearance = list(default="lhs",rhs="yogurt"))
+inspect(yogurt_apriori, linebreak = FALSE)
+
+```
+Unfortunately, yogurt was found in far fewer baskets than milk, so I decided to lower the confidence level to 0.10.
+It turns out that also for this product, it's difficult to rationally explain, what was the guiding principle for customers, who combined e.g. yogurt with detergent. What is more, basing on the low level of confidence statistic for all the following 5 baskets, it is hard to find any relationship between the products.
+
+## "Feature engineering"
+
+To be honest, I am not quite happy with the results that I get, so I will make some kind of a trick and recode some of the products by changing their names to more generic equivalents. Similar products will be categorized into one group, which should increase the value of confidence statistics.
+
+```{r names}
+# Old names
+names.real<-c("whole milk", "cream cheese ", "yogurt", "root vegetables", "frozen vegetables", "other vegetables", "ham", "beef", "sausage") #
+
+# New names
+names.new <-c("diary", "diary", "diary", "vegetables", "vegetables", "vegetables", "meat", "meat", "meat")
+
+# Recode the products
+data_fe <- as.data.frame(converted_grocery)
+data_fe$itemDescription <- plyr::mapvalues(data_fe$itemDescription, names.real, names.new)
+
+# Check
+head(data_fe[data_fe$itemDescription %in% names.new, ])
+
+```
+
+As before, I will create some baskets.
+
+```{r new_baskets, warning = FALSE}
+
+items_fe <- plyr::ddply(data_fe, c("Member_number","Date"), function(temp_df)paste(temp_df$itemDescription,collapse = ","))
+items_fe <- subset(items_fe, select = V1)
+
+write.csv(items_fe, file = "transactions_fe.csv", quote = FALSE,  row.names = T)
+basket_df_fe <- arules::read.transactions("transactions_fe.csv", format = "basket", sep = ",", cols = 1)
+print(basket_df_fe) # The number of rows hasn't changed, but the number of columns has decreased by 7.
+
+basket_apriori_fe <- apriori(basket_df_fe, parameter = list(sup = 0.001, conf = 0.05, minlen = 2))
+summary(basket_apriori_fe)
+
+inspect(head(sort(basket_apriori_fe, by = "confidence", decreasing = TRUE)))
+
+```
+Analyzing the above results, we can see that I managed to artificially increase the value of the confidence statistic, even by 10% by renaming only 9 products. Compared to the first iteration of the algorithm implementation, the initial shopping baskets have also changed. We can also notice that in many of them, meat products have appeared for the first time. Therefore, I think that creating another group, based on meat products would improve the results even more.
+
+## Conclusion
+
+In the above analysis, the Association rules algorithm was used to define, what next product the customers would be inclined to choose based on their current basket of goods. On the basis of the conducted method, several conclusions can be drawn. The main one is that this algorithm, can tell us little, if we have multiple options (in my case, food products).  
+
+Therefore, it seems that for a supermarket manager, this algorithm would probably prove to be moderately helpful. Nevertheless, it has been shown that by artificially allocating products to certain groups, it is possible to better understand the preferences of customers on the basis of their shopping baskets. Such a trick can be helpful in establishing store departments or shelves. Very often when passing through a supermarket, we can notice that beer products are closer to snacks, which may affect the customer's thinking. What's more, managers can also think about introducing some sales or get rid of the goods remaining in stock by creating a special promotions like: "When purchasing product Y, you will receive a 50% discount on the purchase of product X".
